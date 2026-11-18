@@ -1,0 +1,9 @@
+PyYAML==6.0.3
+torch>=2.7,<3
+transformers>=4.45,<5
+safetensors>=0.4.3
+numpy==2.0.2
+alfworld==0.4.2
+textworld[pddl]==1.7.0
+matplotlib>=3.8,<4
+tqdm>=4.66,<5

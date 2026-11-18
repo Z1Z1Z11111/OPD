@@ -1,0 +1,45 @@
+benchmark: ALFWorld
+method: ReAct
+react_style: hiper
+inference_backend: vllm
+split: eval_out_of_distribution
+# Case indices use the half-open interval [start_case, end_case).
+start_case: 0
+end_case: 1
+max_steps: 50
+task_types:
+- 1
+- 2
+- 3
+- 4
+- 5
+- 6
+include_actions: true
+model: models/Qwen2.5-1.5B-Instruct
+device: cuda:0
+temperature: 0.4
+top_p: 1.0
+top_k: 0
+repetition_penalty: 1.0
+seed: 0
+max_prompt_tokens: 2048
+max_tokens: 512
+max_json_retries: 0
+max_actions_per_turn: 1
+output_run_name: qwen2.5-1.5b-hiper-react-vllm
+context:
+  type: recent
+  history_length: 2
+vllm:
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.6
+  dtype: auto
+  max_model_len: 2560
+  max_num_seqs: 32
+  enforce_eager: false
+  enable_prefix_caching: true
+  enable_chunked_prefill: false
+
+# Standalone paths, relative to your_project.
+data_dir: data/alfworld
+output_dir: outputs

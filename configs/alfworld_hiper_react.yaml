@@ -1,0 +1,43 @@
+benchmark: ALFWorld
+method: ReAct
+react_style: hiper
+# One unseen task by default; --split seen/unseen/both selects full splits.
+split: eval_out_of_distribution
+start_case: 0
+end_case: 1
+max_steps: 50
+max_actions_per_turn: 1
+task_types: [1, 2, 3, 4, 5, 6]
+include_actions: true
+context:
+  type: recent
+  history_length: 2
+
+model: models/Qwen2.5-1.5B-Instruct
+inference_backend: vllm
+device: cuda:0
+vllm:
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.6
+  dtype: auto
+  max_model_len: 2560
+  max_num_seqs: 32
+  enforce_eager: false
+  enable_prefix_caching: true
+  enable_chunked_prefill: false
+# Match the ordinary ReAct training script's validation sampling settings.
+# Transformers top_k=0 disables top-k, equivalent to vLLM top_k=-1.
+temperature: 0.4
+top_p: 1.0
+top_k: 0
+# Do not inherit the local checkpoint's repetition_penalty=1.1.
+repetition_penalty: 1.0
+seed: 0
+max_prompt_tokens: 2048
+max_tokens: 512
+# HiPER style never repairs/retries, regardless of this compatibility field.
+max_json_retries: 0
+
+data_dir: data/alfworld
+output_dir: outputs
+output_run_name: qwen2.5-1.5b-hiper-react-vllm
