@@ -2,10 +2,10 @@ benchmark: ALFWorld
 method: ReAct
 react_style: hiper
 inference_backend: vllm
-split: eval_out_of_distribution
+split: eval_in_distribution
 # Case indices use the half-open interval [start_case, end_case).
 start_case: 0
-end_case: 1
+end_case: null
 max_steps: 50
 task_types:
 - 1

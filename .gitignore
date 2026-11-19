@@ -5,5 +5,5 @@ outputs/
 data/alfworld/*
 !data/alfworld/.gitkeep
 
-/data/
-/models/
+/data
+/models
