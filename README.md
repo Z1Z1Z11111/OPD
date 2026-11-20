@@ -1,7 +1,7 @@
 # ALFWorld 新方法开发
 
 默认配置现为 **HiPER 普通 ReAct + 本地 vLLM 推理**。
-这是推理评测入口；强化学习训练、策略损失和训练权重同步尚未接入。
+`method: react` 评测基础模型，`method: rl` 评测 GRPO 权重。训练入口为 `python -m rl.train`。
 原全历史 JSON ReAct 配置保存在 `configs/alfworld_raw_transformers.yaml`。
 
 主要源码如下，report.py 负责统计绘图：
@@ -26,6 +26,39 @@ your_project/
 已准备完整 ALFWorld 文本任务数据：训练集 3553、seen 评测集 140、unseen 评测集 134，位于 `data/alfworld/`。
 运行推荐 Linux / WSL、Python 3.11，
 所需依赖记录在 requirements.txt。
+
+## ALFWorld GRPO 基线
+
+从 OPD 根目录运行。训练从项目内的 `rl/hiper/` 加载 veRL 训练器和 ALFWorld 交互代码，Python 依赖由训练环境提供。
+`configs/grpo.yaml` 选择普通 ReAct 环境、GRPO 优势和 episode 奖励。双卡 vLLM 配置参考上游分组 ALFWorld 示例，
+每批 16 个任务、每个任务 8 条轨迹，训练温度 1.0，学习率 1e-6，actor KL 系数 0.01，无效格式惩罚 0.1。
+主配置提供基础模型、历史长度、最大步数和 token 预算。环境从本地 train 抽样，训练期间在 valid_seen 上验证。
+
+```bash
+# 在具备本地 HiPER 训练依赖的环境中
+python -m rl.train --dry-run
+python -m rl.train --smoke --model models/Qwen2.5-1.5B-Instruct
+# 双卡正式配置，使用 configs/alfworld.yaml 指定的模型
+python -m rl.train
+# 单卡使用本地 HiPER 的 HF/SDPA 适配，保留每任务 8 条轨迹
+python -m rl.train --single-gpu --model models/Qwen2.5-1.5B-Instruct
+```
+
+`--smoke` 用一张卡采 4 条轨迹、每条最多 2 步，做 1 次训练迭代。每次运行保存实际配置和独立的
+`outputs/grpo/<基础模型>/<运行目录>/`。正式配置每 5 步保存一次，最后一步也保存。
+完成后 `latest.json` 指向导出的 Hugging Face 权重，小规模验证单独记录在 `smoke.json`。
+
+```bash
+# 在原 OPD 评测环境中，对同一基础模型和同一任务集比较两条基线
+python evaluate.py --method react --split seen
+python evaluate.py --method rl --split seen
+# 评测 1.5B 正式训练结果，两组使用相同的 1.5B 配置
+python evaluate.py --config configs/alfworld_hiper_react.yaml --method react --split seen
+python evaluate.py --config configs/alfworld_hiper_react.yaml --method rl --split seen
+```
+
+也可以直接修改评测 YAML 的 `method`，或用 `--method rl --rl-checkpoint 路径` 指定某次导出的
+`global_step_N/actor/huggingface`。并行评测入口接受相同参数。评测输出的 `config.json` 记录实际加载的模型路径。
 
 ## 从 PoS 保留了什么
 

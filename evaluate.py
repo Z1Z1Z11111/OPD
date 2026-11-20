@@ -9,6 +9,7 @@ from tqdm.auto import tqdm
 from agent import create_agent, validate_agent_config
 from alfworld_env import ALFWorldEnv, ROOT, project_path
 from typing import Any
+from rl import evaluation_config
 from report import EVAL_SPLITS, generate_report, task_statistics
 
 
@@ -140,6 +141,8 @@ def main():
     parser.add_argument("--split", choices=["seen", "unseen", "both"],
                         help="Run all six task types and the full selected split(s)")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress bars")
+    parser.add_argument("--method", choices=["react", "rl"], help="Override the configured evaluation baseline")
+    parser.add_argument("--rl-checkpoint", help="Evaluate a specific exported GRPO model")
     args = parser.parse_args()
     import yaml
     from model import ModelCaller
@@ -147,6 +150,9 @@ def main():
     import matplotlib
 
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    if args.rl_checkpoint:
+        config["rl_checkpoint"] = args.rl_checkpoint
+    config = evaluation_config(config, args.method)
     validate_agent_config(config)
     config["no_progress"] = args.no_progress
     output = project_path(config.get("output_dir", "outputs")) / datetime.now().strftime("%Y%m%d-%H%M%S-%f")

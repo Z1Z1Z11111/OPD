@@ -11,6 +11,7 @@ from datetime import datetime
 from alfworld_env import ROOT, project_path
 from agent import validate_agent_config
 from evaluate import evaluate, write_json
+from rl import evaluation_config
 from report import EVAL_SPLITS, build_report, generate_report
 from tqdm.auto import tqdm
 
@@ -68,6 +69,8 @@ def main():
     parser.add_argument('--batch-size', type=int, default=4, help='Concurrent tasks per GPU (default: 4)')
     parser.add_argument('--no-progress', action='store_true')
     parser.add_argument('--worker-config', type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--method", choices=["react", "rl"], help="Override the configured evaluation baseline")
+    parser.add_argument("--rl-checkpoint", help="Evaluate a specific exported GRPO model")
     args = parser.parse_args()
     if args.worker_config:
         worker(args.worker_config)
@@ -89,6 +92,9 @@ def main():
         parser.error(f'Requested GPUs {gpus}, but only {visible_count} CUDA GPU(s) are visible. '
                      'Allocate/expose the requested GPUs first; no evaluation was started.')
     config = yaml.safe_load(project_path(args.config).read_text())
+    if args.rl_checkpoint:
+        config["rl_checkpoint"] = args.rl_checkpoint
+    config = evaluation_config(config, args.method)
     validate_agent_config(config)
     if (config.get('inference_backend') == 'vllm'
             and config.get('vllm', {}).get('tensor_parallel_size', 1) != 1):

@@ -17,7 +17,7 @@ verl-agent / GiGPO:
 These portions are licensed under Apache License 2.0; see
 `licenses/Apache-2.0.txt`. The original copyright header is retained in
 `hiper_react.py`. Local changes replace batched Ray environment management with
-the existing episode generator and export format; no training code is imported.
+the existing episode generator and export format.
 
 The upstream Notice.txt records:
 
@@ -30,3 +30,5 @@ The upstream Notice.txt records:
 > Copyright 2025 Nanyang Technological University (NTU), Singapore and the verl-agent (GiGPO) team.
 >
 > Copyright 2026 University of Minnesota, OptimAI-Lab.
+
+The ALFWorld GRPO training sources in `rl/hiper/` come from the local HiPER-agent checkout based on commit `ec5982a71635242de983a34407def05ac0d2e349`, including its HF/SDPA worker adaptations. Upstream notices and license are included in `rl/hiper/Notice.txt` and `rl/hiper/LICENSE`.
