@@ -1,7 +1,7 @@
 # ALFWorld 新方法开发
 
 默认配置现为 **HiPER 普通 ReAct + 本地 vLLM 推理**。
-`method: react` 评测基础模型，`method: rl` 评测 GRPO 权重。训练入口为 `python -m rl.train`。
+`method: react` 评测基础模型，`method: rl` 评测 GRPO 权重。正式训练入口为 `./train-rl`。
 原全历史 JSON ReAct 配置保存在 `configs/alfworld_raw_transformers.yaml`。
 
 主要源码如下，report.py 负责统计绘图：
@@ -37,13 +37,13 @@ your_project/
 ```bash
 # 在具备本地 HiPER 训练依赖的环境中
 python -m rl.train --dry-run
+# 正式训练使用 configs/alfworld.yaml 指定的模型
+./train-rl
+# 小规模检查
 python -m rl.train --smoke --model models/Qwen2.5-1.5B-Instruct
-# 双卡正式配置，使用 configs/alfworld.yaml 指定的模型
-python -m rl.train
-# 单卡使用本地 HiPER 的 HF/SDPA 适配，保留每任务 8 条轨迹
-python -m rl.train --single-gpu --model models/Qwen2.5-1.5B-Instruct
 ```
 
+`./train-rl` 使用当前环境的 Python，启动日志写入 `outputs/grpo/launch-*/train.log`。
 `--smoke` 用一张卡采 4 条轨迹、每条最多 2 步，做 1 次训练迭代。每次运行保存实际配置和独立的
 `outputs/grpo/<基础模型>/<运行目录>/`。正式配置每 5 步保存一次，最后一步也保存。
 完成后 `latest.json` 指向导出的 Hugging Face 权重，小规模验证单独记录在 `smoke.json`。

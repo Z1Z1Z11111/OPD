@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# != 1 || ! $1 =~ ^[12]$ ]]; then
-    echo "用法: $0 1 或 $0 2" >&2
+if [[ $# -ne 0 ]]; then
+    echo "用法 $0" >&2
     exit 2
 fi
 
 cd -- "$(dirname -- "$0")"
-python_bin=/tmp/opd-grpo-check-env/bin/python
-if [[ ! -x $python_bin ]]; then
-    python_bin=python
-fi
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 HF_HUB_OFFLINE=1
 mkdir -p outputs/grpo
-run_dir=$(mktemp -d "outputs/grpo/launch-${1}gpu-XXXXXX")
+run_dir=$(mktemp -d "outputs/grpo/launch-XXXXXX")
 echo "训练日志: $PWD/$run_dir/train.log"
-"$python_bin" -u -m rl.train --gpus "$1" 2>&1 | tee "$run_dir/train.log"
+python -u -m rl.train 2>&1 | tee "$run_dir/train.log"

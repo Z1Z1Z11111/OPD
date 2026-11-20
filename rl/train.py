@@ -27,7 +27,7 @@ def write_slots(path, count, split):
     pq.write_table(pa.Table.from_pylist(rows), path)
 
 
-def training_settings(base, recipe, smoke=False, single_gpu=False):
+def training_settings(base, recipe, smoke=False):
     validate_agent_config(base)
     if base.get("benchmark") != "ALFWorld" or base.get("react_style") != "hiper":
         raise ValueError("GRPO requires ALFWorld and react_style: hiper")
@@ -40,7 +40,7 @@ def training_settings(base, recipe, smoke=False, single_gpu=False):
         "env.history_length": base["context"]["history_length"],
         "env.seed": base["seed"],
     })
-    if smoke or single_gpu:
+    if smoke:
         settings.update({
             "trainer.n_gpus_per_node": 1,
             "actor_rollout_ref.rollout.tensor_model_parallel_size": 1,
@@ -51,9 +51,6 @@ def training_settings(base, recipe, smoke=False, single_gpu=False):
             "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu": 1,
             "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu": 1,
             "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu": 1,
-        })
-    if smoke:
-        settings.update({
             "data.train_batch_size": 1, "data.val_batch_size": 1, "env.rollout.n": 4,
             "env.max_steps": 2, "data.max_response_length": 96,
             "actor_rollout_ref.actor.ppo_mini_batch_size": 4,
@@ -67,8 +64,8 @@ def training_settings(base, recipe, smoke=False, single_gpu=False):
     return settings
 
 
-def train(base, recipe, smoke, dry_run, single_gpu=False):
-    settings = training_settings(base, recipe, smoke, single_gpu)
+def train(base, recipe, smoke, dry_run):
+    settings = training_settings(base, recipe, smoke)
     source_dir = Path(__file__).resolve().parent / "hiper"
     trainer_dir = source_dir / "verl/trainer"
     data = project_path(base["data_dir"]).resolve()
@@ -130,23 +127,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/alfworld.yaml")
     parser.add_argument("--recipe", default="configs/grpo.yaml")
-    gpu_options = parser.add_mutually_exclusive_group()
-    gpu_options.add_argument("--gpus", type=int, choices=(1, 2), help="Use the PRO 6000 recipe with this many GPUs")
-    gpu_options.add_argument("--single-gpu", action="store_true", help="Use the local HiPER HF/SDPA single-GPU backend")
     parser.add_argument("--smoke", action="store_true", help="One update on one GPU with four rollouts")
     parser.add_argument("--dry-run", action="store_true", help="Print resolved overrides without training")
     parser.add_argument("--model", help="Override the base model for this training run")
     args = parser.parse_args()
     base = yaml.safe_load(project_path(args.config).read_text())
     recipe = yaml.safe_load(project_path(args.recipe).read_text())
-    if args.gpus:
-        profile = recipe["pro6000"]
-        base["model"] = profile["model"]
-        recipe["overrides"].update(profile["overrides"])
-        recipe["overrides"]["trainer.n_gpus_per_node"] = args.gpus
     if args.model:
         base["model"] = args.model
-    train(base, recipe, args.smoke, args.dry_run, args.single_gpu)
+    train(base, recipe, args.smoke, args.dry_run)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,8 @@ class BaselineTest(unittest.TestCase):
 
     def test_checkpoint_selection(self):
         with TemporaryDirectory() as tmp:
-            self.base.update(model=f"{tmp}/base", rl_output_dir=f"{tmp}/runs")
+            tmp_path = Path(tmp).resolve()
+            self.base.update(model=str(tmp_path / "base"), rl_output_dir=str(tmp_path / "runs"))
             self.assertEqual(evaluation_config(self.base)["model"], self.base["model"])
             with self.assertRaises(FileNotFoundError):
                 evaluation_config(self.base, "rl")
@@ -34,11 +35,13 @@ class BaselineTest(unittest.TestCase):
 
     def test_environment_groups(self):
         formal = training_settings(self.base, self.recipe)
+        self.assertEqual(formal["trainer.n_gpus_per_node"], 2)
+        self.assertEqual(formal["actor_rollout_ref.rollout.name"], "vllm")
+        self.assertEqual(formal["actor_rollout_ref.rollout.tensor_model_parallel_size"], 2)
+        self.assertEqual(formal["data.train_batch_size"], 16)
         self.assertEqual(formal["actor_rollout_ref.rollout.n"], 1)
         self.assertEqual(formal["env.rollout.n"], 8)
         self.assertEqual(formal["algorithm.adv_estimator"], "grpo")
-        local = training_settings(self.base, self.recipe, single_gpu=True)
-        self.assertEqual(formal["env.rollout.n"], local["env.rollout.n"])
         small = training_settings(self.base, self.recipe, smoke=True)
         self.assertEqual(small["trainer.total_training_steps"], 1)
         self.assertGreater(small["env.rollout.n"], 1)
