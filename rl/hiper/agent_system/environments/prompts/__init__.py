@@ -13,9 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .alfworld import *
-from .webshop import *
-from .sokoban import *
-from .gym_cards import *
-from .appworld import *
-from .search import *
+from .alfworld import ALFWORLD_TEMPLATE, ALFWORLD_TEMPLATE_NO_HIS
+
+__all__ = ["ALFWORLD_TEMPLATE", "ALFWORLD_TEMPLATE_NO_HIS"]

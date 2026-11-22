@@ -249,4 +249,5 @@ class FSDPCheckpointManager(BaseCheckpointManager):
             # wait for rank0 to dump hf_model to local
             torch.distributed.barrier()
 
-        self.previous_saved_paths.append(local_path)
+        if os.path.basename(os.path.dirname(os.path.normpath(local_path))) != "best":
+            self.previous_saved_paths.append(local_path)

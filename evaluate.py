@@ -141,8 +141,9 @@ def main():
     parser.add_argument("--split", choices=["seen", "unseen", "both"],
                         help="Run all six task types and the full selected split(s)")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress bars")
-    parser.add_argument("--method", choices=["react", "rl"], help="Override the configured evaluation baseline")
-    parser.add_argument("--rl-checkpoint", help="Evaluate a specific exported GRPO model")
+    parser.add_argument("--method", choices=["react", "grpo"],
+                        help="Select evaluation mode: react (base model) or grpo (GRPO checkpoint)")
+    parser.add_argument("--checkpoint", help="Evaluate a specific exported GRPO Hugging Face model")
     args = parser.parse_args()
     import yaml
     from model import ModelCaller
@@ -150,8 +151,8 @@ def main():
     import matplotlib
 
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-    if args.rl_checkpoint:
-        config["rl_checkpoint"] = args.rl_checkpoint
+    if args.checkpoint:
+        config["checkpoint"] = args.checkpoint
     config = evaluation_config(config, args.method)
     validate_agent_config(config)
     config["no_progress"] = args.no_progress

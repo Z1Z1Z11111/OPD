@@ -1,25 +1,22 @@
 # Third-party code
 
-The existing PoS-derived code remains covered by the root MIT LICENSE.
+The PoS-derived evaluation runner, environment adapter, and data preparation
+code remain covered by the root MIT [LICENSE](LICENSE).
 
-`hiper_react.py` adapts the ordinary ALFWorld ReAct interface distributed in
-HiPER-agent (the local `HiPER-agent-main` source tree), which builds on
-verl-agent / GiGPO:
+`agent.py` adapts the ordinary ALFWorld ReAct prompt templates, recent-window
+history, and action projection from HiPER-agent (`git@github.com:JonP07/HiPER-agent.git`),
+which builds on verl-agent / verl. These portions are licensed under Apache
+License 2.0 (see [licenses/Apache-2.0.txt](licenses/Apache-2.0.txt)).
 
-- `agent_system/environments/prompts/alfworld.py`: ordinary ReAct templates,
-  preserved verbatim.
-- `agent_system/environments/env_package/alfworld/projection.py`: action
-  projection behavior, adapted to the local decision/logging interface.
-- `agent_system/memory/memory.py` and `agent_system/environments/env_manager.py`:
-  recent pre-action observation/action history and prompt assembly, adapted for
-  one episode at a time.
+The minimal GRPO training subset in `rl/hiper/` is pruned from the same
+HiPER-agent checkout (`ec5982a71635242de983a34407def05ac0d2e349`), keeping only
+the ALFWorld ReAct environment wrapper, multi-turn rollout loop, episode reward
+manager, and FSDP + vLLM/HF GRPO trainer. Plan–Execute (`Options`), HAE,
+GiGPO, other benchmark environments, Megatron, SGLang, and auxiliary trainers
+have been removed. Upstream notices and license are retained in
+`rl/hiper/Notice.txt` and `rl/hiper/LICENSE`.
 
-These portions are licensed under Apache License 2.0; see
-`licenses/Apache-2.0.txt`. The original copyright header is retained in
-`hiper_react.py`. Local changes replace batched Ray environment management with
-the existing episode generator and export format.
-
-The upstream Notice.txt records:
+The upstream `Notice.txt` records:
 
 > This project includes code from the verl project.
 >
@@ -30,5 +27,3 @@ The upstream Notice.txt records:
 > Copyright 2025 Nanyang Technological University (NTU), Singapore and the verl-agent (GiGPO) team.
 >
 > Copyright 2026 University of Minnesota, OptimAI-Lab.
-
-The ALFWorld GRPO training sources in `rl/hiper/` come from the local HiPER-agent checkout based on commit `ec5982a71635242de983a34407def05ac0d2e349`, including its HF/SDPA worker adaptations. Upstream notices and license are included in `rl/hiper/Notice.txt` and `rl/hiper/LICENSE`.

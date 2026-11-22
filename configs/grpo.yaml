@@ -39,7 +39,9 @@ overrides:
   trainer.total_epochs: 150
   trainer.test_freq: 5
   trainer.save_freq: 5
-  trainer.logger: [console]
+  trainer.max_actor_ckpt_to_keep: 3
+  trainer.logger: [console, swanlab]
+  trainer.log_val_generations: 10
   trainer.project_name: opd_alfworld
-  trainer.experiment_name: grpo
+  trainer.experiment_name: grpo_qwen2.5_1.5b
   trainer.resume_mode: disable

@@ -1,4 +1,4 @@
-"""Train the OPD ALFWorld baseline with the bundled HiPER veRL trainer."""
+"""Train the ALFWorld ReAct policy with GRPO using the bundled minimal veRL trainer."""
 import argparse
 from datetime import datetime
 import json
@@ -9,13 +9,13 @@ from tempfile import NamedTemporaryFile, mkdtemp
 
 import yaml
 
-from agent import validate_agent_config
+from agent import get_history_length, validate_agent_config
 from alfworld_env import project_path
 from rl import run_root
 
 
 def write_slots(path, count, split):
-    """The upstream environment supplies the task at reset; parquet rows are batch slots."""
+    """The ALFWorld environment supplies the task at reset; parquet rows are batch slots."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -29,15 +29,15 @@ def write_slots(path, count, split):
 
 def training_settings(base, recipe, smoke=False):
     validate_agent_config(base)
-    if base.get("benchmark") != "ALFWorld" or base.get("react_style") != "hiper":
-        raise ValueError("GRPO requires ALFWorld and react_style: hiper")
+    if base.get("benchmark") != "ALFWorld":
+        raise ValueError("GRPO training supports ALFWorld only")
     settings = dict(recipe["overrides"])
     settings.update({
         "actor_rollout_ref.model.path": str(project_path(base["model"]).resolve()),
         "data.max_prompt_length": base["max_prompt_tokens"],
         "data.max_response_length": base["max_tokens"],
         "env.max_steps": base["max_steps"],
-        "env.history_length": base["context"]["history_length"],
+        "env.history_length": get_history_length(base),
         "env.seed": base["seed"],
     })
     if smoke:
@@ -51,16 +51,25 @@ def training_settings(base, recipe, smoke=False):
             "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu": 1,
             "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu": 1,
             "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu": 1,
-            "data.train_batch_size": 1, "data.val_batch_size": 1, "env.rollout.n": 4,
-            "env.max_steps": 2, "data.max_response_length": 96,
+            "data.train_batch_size": 1,
+            "data.val_batch_size": 1,
+            "env.rollout.n": 4,
+            "env.max_steps": 2,
+            "data.max_response_length": 96,
             "actor_rollout_ref.actor.ppo_mini_batch_size": 4,
             "data.dataloader_num_workers": 0,
             "ray_init.num_cpus": 4,
-            "trainer.total_training_steps": 1, "trainer.val_before_train": False,
-            "trainer.test_freq": -1, "trainer.save_freq": 1,
+            "trainer.total_training_steps": 1,
+            "trainer.val_before_train": False,
+            "trainer.test_freq": -1,
+            "trainer.save_freq": 1,
+            "trainer.logger": ["console"],
+            "trainer.log_val_generations": 0,
         })
     if settings["algorithm.adv_estimator"] != "grpo" or settings["env.rollout.n"] < 2:
         raise ValueError("GRPO requires grouped environment rollouts (env.rollout.n >= 2)")
+    if settings["env.env_name"] != "alfworld/AlfredTWEnv":
+        raise ValueError("Only standard ReAct environment alfworld/AlfredTWEnv is supported")
     return settings
 
 
@@ -73,12 +82,15 @@ def train(base, recipe, smoke, dry_run):
         print(yaml.safe_dump(dict(source_dir=str(source_dir), ALFWORLD_DATA=str(data),
                                   overrides=settings), sort_keys=False))
         return
-    for path in (data / "json_2.1.1/train", data / "json_2.1.1/valid_seen",
-                 Path(settings["actor_rollout_ref.model.path"]) / "config.json"):
+    for path in (
+        data / "json_2.1.1/train",
+        data / "json_2.1.1/valid_seen",
+        Path(settings["actor_rollout_ref.model.path"]) / "config.json",
+    ):
         if not path.exists():
             raise FileNotFoundError(path)
     sys.path.insert(0, str(source_dir))
-    # Ray workers start fresh Python processes and also need the matching veRL fork.
+    # Ray workers start fresh Python processes and also need the bundled minimal veRL tree.
     os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (str(source_dir), os.getenv("PYTHONPATH"))))
     os.environ["ALFWORLD_DATA"] = str(data)
     if settings["actor_rollout_ref.rollout.name"] == "vllm":
@@ -100,9 +112,11 @@ def train(base, recipe, smoke, dry_run):
     settings["trainer.default_local_dir"] = str(run)
     config = OmegaConf.load(trainer_dir / "config/ppo_trainer.yaml")
     OmegaConf.set_struct(config, True)
-    # These optional fields are read with .get() by this HiPER checkout.
-    optional = {"actor_rollout_ref.model.attn_implementation",
-                    "actor_rollout_ref.rollout.micro_batch_size", "data.dataloader_num_workers"}
+    optional = {
+        "actor_rollout_ref.model.attn_implementation",
+        "actor_rollout_ref.rollout.micro_batch_size",
+        "data.dataloader_num_workers",
+    }
     for key, value in settings.items():
         OmegaConf.update(config, key, value, merge=False, force_add=key in optional)
     OmegaConf.save(config, run / "config.yaml", resolve=True)
@@ -113,9 +127,11 @@ def train(base, recipe, smoke, dry_run):
     export = run / f"global_step_{step}/actor/huggingface"
     if not (export / "config.json").is_file() or not any(export.glob("*.safetensors")):
         raise RuntimeError(f"Incomplete Hugging Face export: {export}")
-    manifest = dict(base_model=settings["actor_rollout_ref.model.path"],
-                    checkpoint=str(export.relative_to(root)), step=step)
-    # Smoke runs use a reduced horizon; keep the production evaluation pointer separate.
+    manifest = dict(
+        base_model=settings["actor_rollout_ref.model.path"],
+        checkpoint=str(export.relative_to(root)),
+        step=step,
+    )
     target = root / ("smoke.json" if smoke else "latest.json")
     with NamedTemporaryFile("w", dir=root, delete=False) as fp:
         json.dump(manifest, fp)
@@ -131,8 +147,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print resolved overrides without training")
     parser.add_argument("--model", help="Override the base model for this training run")
     args = parser.parse_args()
-    base = yaml.safe_load(project_path(args.config).read_text())
-    recipe = yaml.safe_load(project_path(args.recipe).read_text())
+    base = yaml.safe_load(project_path(args.config).read_text(encoding="utf-8"))
+    recipe = yaml.safe_load(project_path(args.recipe).read_text(encoding="utf-8"))
     if args.model:
         base["model"] = args.model
     train(base, recipe, args.smoke, args.dry_run)

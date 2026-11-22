@@ -69,8 +69,9 @@ def main():
     parser.add_argument('--batch-size', type=int, default=4, help='Concurrent tasks per GPU (default: 4)')
     parser.add_argument('--no-progress', action='store_true')
     parser.add_argument('--worker-config', type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--method", choices=["react", "rl"], help="Override the configured evaluation baseline")
-    parser.add_argument("--rl-checkpoint", help="Evaluate a specific exported GRPO model")
+    parser.add_argument("--method", choices=["react", "grpo"],
+                        help="Select evaluation mode: react (base model) or grpo (GRPO checkpoint)")
+    parser.add_argument("--checkpoint", help="Evaluate a specific exported GRPO Hugging Face model")
     args = parser.parse_args()
     if args.worker_config:
         worker(args.worker_config)
@@ -91,13 +92,12 @@ def main():
     if max(gpus) >= visible_count:
         parser.error(f'Requested GPUs {gpus}, but only {visible_count} CUDA GPU(s) are visible. '
                      'Allocate/expose the requested GPUs first; no evaluation was started.')
-    config = yaml.safe_load(project_path(args.config).read_text())
-    if args.rl_checkpoint:
-        config["rl_checkpoint"] = args.rl_checkpoint
+    config = yaml.safe_load(project_path(args.config).read_text(encoding="utf-8"))
+    if args.checkpoint:
+        config["checkpoint"] = args.checkpoint
     config = evaluation_config(config, args.method)
     validate_agent_config(config)
-    if (config.get('inference_backend') == 'vllm'
-            and config.get('vllm', {}).get('tensor_parallel_size', 1) != 1):
+    if config.get('vllm', {}).get('tensor_parallel_size', 1) != 1:
         parser.error('This launcher assigns one GPU per worker; use tensor_parallel_size=1, '
                      'or run evaluate.py directly with tensor parallelism')
     config.update(start_case=0, end_case=None, task_types=[1, 2, 3, 4, 5, 6],

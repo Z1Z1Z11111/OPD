@@ -1,9 +1,0 @@
-# Install vLLM first so its wheel selects a compatible PyTorch/Transformers stack.
-# Select a GPU-compatible vLLM version on the remote Linux machine and record it.
-# Do not combine this with the legacy pinned Transformers requirements.
-vllm
-PyYAML==6.0.3
-alfworld==0.4.2
-textworld[pddl]==1.7.0
-matplotlib>=3.8,<4
-tqdm>=4.66,<5

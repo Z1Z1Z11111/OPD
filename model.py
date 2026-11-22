@@ -1,158 +1,141 @@
-"""Run the local Qwen checkpoint and count prompt/completion tokens."""
+"""Offline vLLM inference for ALFWorld ReAct / GRPO evaluation."""
+import json
 
 from alfworld_env import project_path
 
 
-def generation_kwargs(config: dict, pad_token_id: int) -> dict:
-    """Build explicit overrides without changing legacy checkpoint defaults."""
+def sampling_options(config: dict) -> dict:
+    """Translate evaluator decoding settings to vLLM SamplingParams kwargs."""
     temperature = config["temperature"]
-    options = dict(max_new_tokens=config["max_tokens"],
-                   do_sample=temperature > 0, pad_token_id=pad_token_id)
-    if temperature > 0:
-        options["temperature"] = temperature
-        for name in ("top_p", "top_k"):
-            if name in config:
-                options[name] = config[name]
-    else:
-        # Reset the checkpoint's sampling defaults for greedy decoding.
-        options.update(temperature=1.0, top_p=1.0, top_k=50)
-    if "repetition_penalty" in config:
-        options["repetition_penalty"] = config["repetition_penalty"]
-    return options
+    max_tokens = config["max_tokens"]
+    top_k = config.get("top_k", 0)
+    top_p = config.get("top_p", 1.0)
+    penalty = config.get("repetition_penalty", 1.0)
+    if temperature < 0 or max_tokens <= 0:
+        raise ValueError("temperature must be nonnegative and max_tokens must be positive")
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < -1:
+        raise ValueError("top_k must be -1, 0 (disabled), or a positive integer")
+    if not 0 < top_p <= 1 or penalty <= 0:
+        raise ValueError("top_p must be in (0, 1] and repetition_penalty must be positive")
+    return dict(
+        n=1,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        top_k=-1 if top_k <= 0 else top_k,
+        top_p=top_p,
+        repetition_penalty=penalty,
+        detokenize=False,
+    )
 
 
 class ModelCaller:
-    """Keep the evaluator API stable while selecting a local inference backend."""
-
-    def __init__(self, config: dict):
-        backend = config.get("inference_backend", "transformers")
-        if backend == "vllm":
-            from vllm_model import VLLMModelCaller
-            self.backend = VLLMModelCaller(config)
-        elif backend == "transformers":
-            self.backend = TransformersModelCaller(config)
-        else:
-            raise ValueError(f"Unsupported inference_backend: {backend}")
-
-    def __call__(self, messages):
-        return self.backend(messages)
-
-    def generate_batch(self, conversations):
-        return self.backend.generate_batch(conversations)
-
-    def token_usage(self):
-        return self.backend.token_usage()
-
-
-class TransformersModelCaller:
-    """Load a local Transformers model once for all evaluation episodes."""
+    """Load one local policy via offline vLLM and batch independent conversations."""
 
     def __init__(self, config: dict):
         self.config = config
         model_path = project_path(config["model"])
         if not model_path.is_dir():
             raise FileNotFoundError(f"Local model directory not found: {model_path}")
-        if config["temperature"] < 0:
-            raise ValueError("temperature must be nonnegative")
-        if config["max_tokens"] <= 0:
-            raise ValueError("max_tokens must be positive")
-        if config.get("max_prompt_tokens", 1) <= 0:
-            raise ValueError("max_prompt_tokens must be positive")
-        if "top_p" in config and not 0 < config["top_p"] <= 1:
-            raise ValueError("top_p must be in (0, 1]")
-        if "top_k" in config and (not isinstance(config["top_k"], int) or config["top_k"] < 0):
-            raise ValueError("Transformers top_k must be a nonnegative integer")
-        if config.get("repetition_penalty", 1.0) <= 0:
-            raise ValueError("repetition_penalty must be positive")
+        options = sampling_options(config)
+        device = config.get("device", "auto")
+        if device not in ("auto", "cuda", "cuda:0"):
+            raise ValueError("vLLM requires CUDA; select GPUs with CUDA_VISIBLE_DEVICES")
+        settings = config.get("vllm", {})
+        allowed = {
+            "tensor_parallel_size",
+            "gpu_memory_utilization",
+            "dtype",
+            "max_model_len",
+            "max_num_seqs",
+            "enforce_eager",
+            "enable_prefix_caching",
+            "enable_chunked_prefill",
+        }
+        unknown = set(settings) - allowed
+        if unknown:
+            raise ValueError(f"Unknown vllm settings: {sorted(unknown)}")
+        tp = settings.get("tensor_parallel_size", 1)
+        if isinstance(tp, bool) or not isinstance(tp, int) or tp < 1:
+            raise ValueError("vllm.tensor_parallel_size must be a positive integer")
+        utilization = settings.get("gpu_memory_utilization", 0.6)
+        if not 0 < utilization <= 1:
+            raise ValueError("vllm.gpu_memory_utilization must be in (0, 1]")
+        self.prompt_limit = config.get("max_prompt_tokens", 2048)
+        if not isinstance(self.prompt_limit, int) or self.prompt_limit < 1:
+            raise ValueError("max_prompt_tokens must be a positive integer")
+        self.context_limit = settings.get("max_model_len", self.prompt_limit + config["max_tokens"])
+        if self.context_limit < self.prompt_limit + config["max_tokens"]:
+            raise ValueError("vllm.max_model_len must cover max_prompt_tokens + max_tokens")
 
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        if not torch.cuda.is_available():
+            raise RuntimeError("The vLLM backend requires a CUDA GPU")
+        if tp > torch.cuda.device_count():
+            raise ValueError("tensor_parallel_size exceeds the number of visible CUDA GPUs")
+        try:
+            from vllm import LLM, SamplingParams
+        except ImportError as error:
+            raise ImportError("Install requirements.txt in the GPU environment") from error
 
-        self.torch = torch
-        device = config.get("device", "auto")
-        if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = torch.device(device)
-        if self.device.type == "cuda":
-            if not torch.cuda.is_available():
-                raise RuntimeError("CUDA is unavailable; set device to cpu or fix the GPU driver/PyTorch installation")
-            with torch.cuda.device(self.device):
-                dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        elif self.device.type == "cpu":
-            dtype = torch.float32
-        else:
-            raise ValueError("device must be auto, cpu, or cuda (optionally cuda:<index>)")
-
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            str(model_path), local_files_only=True,
+        self.engine = LLM(
+            model=str(model_path),
+            tokenizer=str(model_path),
+            trust_remote_code=False,
+            generation_config="vllm",
+            seed=int(config.get("seed", 0)),
+            tensor_parallel_size=tp,
+            gpu_memory_utilization=utilization,
+            dtype=settings.get("dtype", "auto"),
+            max_model_len=self.context_limit,
+            max_num_seqs=settings.get("max_num_seqs", 32),
+            enforce_eager=settings.get("enforce_eager", False),
+            enable_prefix_caching=settings.get("enable_prefix_caching", True),
+            enable_chunked_prefill=settings.get("enable_chunked_prefill", False),
         )
-        self.tokenizer.padding_side = "left"
-        if self.tokenizer.pad_token_id is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model = AutoModelForCausalLM.from_pretrained(
-            str(model_path), local_files_only=True,
-            use_safetensors=True, dtype=dtype,
-        ).to(self.device).eval()
-        if config.get("seed") is not None:
-            torch.manual_seed(int(config["seed"]))
-        self.input_tokens = 0
-        self.output_tokens = 0
-        self.total_tokens = 0
+        self.tokenizer = self.engine.get_tokenizer()
+        generation_file = model_path / "generation_config.json"
+        if generation_file.is_file():
+            eos = json.loads(generation_file.read_text(encoding="utf-8")).get("eos_token_id")
+            if eos is not None:
+                options["stop_token_ids"] = eos if isinstance(eos, list) else [eos]
+        self.sampling_params = SamplingParams(**options)
+        self.usage = dict(input_tokens=0, output_tokens=0, total_tokens=0)
 
-    def __call__(self, messages: list[dict]) -> str:
+    def __call__(self, messages):
         return self.generate_batch([messages])[0][0]
 
     def generate_batch(self, conversations):
-        """Return (response, token usage) for each independent conversation."""
         if not conversations:
             return []
-        prompts = [self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True,
-        ) for messages in conversations]
-        inputs = self.tokenizer(
-            prompts, return_tensors="pt", add_special_tokens=False, padding=True,
-        ).to(self.device)
-        input_length = inputs["input_ids"].shape[-1]
-        prompt_limit = self.config.get("max_prompt_tokens")
-        if prompt_limit is not None and input_length > prompt_limit:
-            raise ValueError(
-                f"Prompt ({input_length} tokens) exceeds max_prompt_tokens ({prompt_limit})"
+        requests = []
+        for messages in conversations:
+            prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
             )
-        max_tokens = self.config["max_tokens"]
-        context_limit = self.model.config.max_position_embeddings
-        if input_length + max_tokens > context_limit:
-            raise ValueError(
-                f"Prompt ({input_length} tokens) plus max_tokens ({max_tokens}) "
-                f"exceeds the model context limit ({context_limit})"
-            )
-
-        pad_token_id = self.tokenizer.pad_token_id
-        if pad_token_id is None:
-            pad_token_id = self.tokenizer.eos_token_id
-        generation = generation_kwargs(self.config, pad_token_id)
-        with self.torch.inference_mode():
-            outputs = self.model.generate(**inputs, **generation)
-        eos = self.model.generation_config.eos_token_id
-        eos_ids = set(eos if isinstance(eos, (list, tuple)) else [eos])
+            ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+            if len(ids) > self.prompt_limit:
+                raise ValueError(f"Prompt ({len(ids)} tokens) exceeds max_prompt_tokens ({self.prompt_limit})")
+            if len(ids) + self.config["max_tokens"] > self.context_limit:
+                raise ValueError("Prompt plus output budget exceeds vLLM context limit")
+            requests.append({"prompt_token_ids": ids})
+        outputs = self.engine.generate(requests, self.sampling_params, use_tqdm=False)
+        if len(outputs) != len(requests):
+            raise RuntimeError("vLLM returned a different number of batch responses")
         results = []
-        for row, mask in zip(outputs, inputs["attention_mask"]):
-            completion = row[input_length:].tolist()
-            # Include the first EOS, exclude padding inserted after termination.
-            stop = next((i + 1 for i, token in enumerate(completion) if token in eos_ids), len(completion))
-            completion = completion[:stop]
-            prompt_tokens = int(mask.sum().item())
-            usage = dict(input_tokens=prompt_tokens, output_tokens=len(completion),
-                         total_tokens=prompt_tokens + len(completion))
-            self.input_tokens += usage["input_tokens"]
-            self.output_tokens += usage["output_tokens"]
-            results.append((self.tokenizer.decode(completion, skip_special_tokens=True), usage))
-        self.total_tokens = self.input_tokens + self.output_tokens
+        for request, output in zip(requests, outputs):
+            if output.prompt_token_ids != request["prompt_token_ids"] or len(output.outputs) != 1:
+                raise RuntimeError("Unexpected vLLM response ordering or number of completions")
+            completion_ids = list(output.outputs[0].token_ids)
+            prompt_tokens = len(request["prompt_token_ids"])
+            usage = dict(
+                input_tokens=prompt_tokens,
+                output_tokens=len(completion_ids),
+                total_tokens=prompt_tokens + len(completion_ids),
+            )
+            for key in self.usage:
+                self.usage[key] += usage[key]
+            results.append((self.tokenizer.decode(completion_ids, skip_special_tokens=True), usage))
         return results
 
-    def token_usage(self) -> dict[str, int]:
-        """Return cumulative local token counts, including generated EOS tokens."""
-        return {
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "total_tokens": self.total_tokens,
-        }
+    def token_usage(self):
+        return self.usage.copy()
