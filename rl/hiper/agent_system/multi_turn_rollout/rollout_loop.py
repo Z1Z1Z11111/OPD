@@ -112,19 +112,7 @@ class TrajectoryCollector:
             truncation=self.config.data.truncation,
         )
         position_ids = compute_position_id_with_mask(attention_mask)
-
-        raw_prompt_ids = self.tokenizer.encode(raw_prompt, add_special_tokens=False)
-        if len(raw_prompt_ids) > self.config.data.max_prompt_length:
-            if self.config.data.truncation == "left":
-                raw_prompt_ids = raw_prompt_ids[-self.config.data.max_prompt_length :]
-            elif self.config.data.truncation == "right":
-                raw_prompt_ids = raw_prompt_ids[: self.config.data.max_prompt_length]
-            elif self.config.data.truncation == "middle":
-                left_half = self.config.data.max_prompt_length // 2
-                right_half = self.config.data.max_prompt_length - left_half
-                raw_prompt_ids = raw_prompt_ids[:left_half] + raw_prompt_ids[-right_half:]
-            elif self.config.data.truncation == "error":
-                raise RuntimeError(f"Prompt length {len(raw_prompt_ids)} is longer than {self.config.data.max_prompt_length}.")
+        raw_prompt_ids = input_ids[0][attention_mask[0].bool()].tolist()
 
         # Build final output dict
         row_dict.update({
@@ -146,42 +134,79 @@ class TrajectoryCollector:
         self,
         gen_batch: DataProto, 
         obs: Dict, 
+        indices=None,
     ) -> DataProto:
         """
         Process a batch of observation samples, converting environment observations into model-processable format.
-        
-        Parameters:
-            gen_batch (DataProto): Batch data containing original prompts
-            obs (Dict): Environment observation dictionary
-                - 'text' (None or List[str]): Text observation data
-                - 'image' (np.ndarray or torch.Tensor): Image observation data
-                - 'anchor' (None or Any): Anchor observation without any histories or additional info. (for GiGPO only).
-        
-        Returns:
-            DataProto: Contains processed batch data with preserved metadata
         """
-        batch_size = len(gen_batch.batch['input_ids'])
+        if indices is None:
+            indices = list(range(len(gen_batch.batch['input_ids'])))
+        else:
+            indices = [int(i) for i in indices]
+
+        obs_texts = obs.get('text', None)
+        obs_images = obs.get('image', None)
+        obs_anchors = obs.get('anchor', None)
+        if obs_images is not None and any(obs_images[i] is not None for i in indices):
+            raise NotImplementedError("Multimodal observations are not enabled in this text ALFWorld GRPO build.")
+
+        max_len = self.config.data.max_prompt_length
+        pad_id = self.tokenizer.pad_token_id
+        trunc = self.config.data.truncation
+        return_raw_chat = self.config.data.get('return_raw_chat', False)
+        raw_sources = gen_batch.non_tensor_batch['data_source']
+
+        chats = [[{"content": (obs_texts[i] if obs_texts is not None and obs_texts[i] is not None else ""), "role": "user"}] for i in indices]
+        prompts = [
+            self.tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
+            for chat in chats
+        ]
+        encoded_ids = self.tokenizer(prompts, add_special_tokens=False)["input_ids"]
+
+        n = len(indices)
+        input_ids = torch.full((n, max_len), pad_id, dtype=torch.long)
+        attention_mask = torch.zeros((n, max_len), dtype=torch.long)
+        trimmed_ids_list = []
+        for pos, ids in enumerate(encoded_ids):
+            if len(ids) > max_len:
+                if trunc == "left":
+                    ids = ids[-max_len:]
+                elif trunc == "right":
+                    ids = ids[:max_len]
+                elif trunc == "middle":
+                    left_half = max_len // 2
+                    ids = ids[:left_half] + ids[-(max_len - left_half):]
+                elif trunc == "error":
+                    raise RuntimeError(f"Prompt length {len(ids)} is longer than {max_len}.")
+            length = len(ids)
+            if length > 0:
+                input_ids[pos, max_len - length :] = torch.tensor(ids, dtype=torch.long)
+                attention_mask[pos, max_len - length :] = 1
+            trimmed_ids_list.append(ids)
+
+        position_ids = compute_position_id_with_mask(attention_mask)
         processed_samples = []
-        
-        # Process each sample in parallel
-        for item in range(batch_size):
-            # Extract per-sample observations
-            processed = self.preprocess_single_sample(
-                item=item,
-                gen_batch=gen_batch,
-                obs=obs,
-            )
-            processed_samples.append(processed)
-        
-        # Aggregate batch data
+        for pos, item in enumerate(indices):
+            obs_anchor = obs_anchors[item] if obs_anchors is not None else None
+            _obs_anchor = torch_to_numpy(obs_anchor, is_object=True) if isinstance(obs_anchor, torch.Tensor) else obs_anchor
+            row_dict = {
+                'input_ids': input_ids[pos],
+                'attention_mask': attention_mask[pos],
+                'position_ids': position_ids[pos],
+                'raw_prompt_ids': trimmed_ids_list[pos],
+                'anchor_obs': _obs_anchor,
+                'index': item,
+                'data_source': raw_sources[item],
+            }
+            if return_raw_chat:
+                row_dict['raw_prompt'] = chats[pos]
+            processed_samples.append(row_dict)
+
         batch = collate_fn(processed_samples)
-        
-        # Create DataProto with preserved metadata
         new_batch = DataProto.from_single_dict(
             data=batch,
             meta_info=gen_batch.meta_info
         )
-
         return new_batch
 
 
@@ -286,8 +311,11 @@ class TrajectoryCollector:
         # Trajectory collection loop
         for _step in range(self.config.env.max_steps):
             active_masks = np.logical_not(is_done)
+            active_indices = np.flatnonzero(active_masks)
+            if len(active_indices) == 0:
+                break
 
-            batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs)
+            batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs, indices=active_indices)
 
             batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
             non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
@@ -310,16 +338,18 @@ class TrajectoryCollector:
             # # unpad
             batch_output = unpad_dataproto(batch_output_padded, pad_size=pad_size)
 
-            batch.non_tensor_batch['uid'] = uid_batch
-            batch.non_tensor_batch['traj_uid'] = traj_uid
+            batch.non_tensor_batch['uid'] = uid_batch[active_indices]
+            batch.non_tensor_batch['traj_uid'] = traj_uid[active_indices]
 
             batch = batch.union(batch_output)
             
-            text_actions = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
+            active_text_actions = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
+            text_actions = ["__inactive__"] * batch_size
+            for pos, idx in enumerate(active_indices):
+                text_actions[idx] = active_text_actions[pos]
             
             next_obs, rewards, dones, infos = envs.step(text_actions)
 
-            
             if len(rewards.shape) == 2:
                 rewards = rewards.squeeze(1)
             if len(dones.shape) == 2:
@@ -327,29 +357,30 @@ class TrajectoryCollector:
                 dones = dones.squeeze(1)
 
             if 'is_action_valid' in infos[0]:
-                batch.non_tensor_batch['is_action_valid'] = np.array([info['is_action_valid'] for info in infos], dtype=bool)
+                batch.non_tensor_batch['is_action_valid'] = np.array([infos[idx]['is_action_valid'] for idx in active_indices], dtype=bool)
             else:
-                batch.non_tensor_batch['is_action_valid'] = np.ones(batch_size, dtype=bool)
+                batch.non_tensor_batch['is_action_valid'] = np.ones(len(active_indices), dtype=bool)
 
             if 'tool_calling' in infos[0]:
                 tool_callings[active_masks] += np.array([info['tool_calling'] for info in infos], dtype=np.float32)[active_masks]
             # Create reward tensor, only assign rewards for active environments
-            # episode_rewards += torch_to_numpy(rewards) * torch_to_numpy(active_masks)
             episode_rewards[active_masks] += torch_to_numpy(rewards)[active_masks]
             episode_lengths[active_masks] += 1
 
             assert len(rewards) == batch_size, f"env should return rewards for all environments, got {len(rewards)} rewards for {batch_size} environments"
-            batch.non_tensor_batch['rewards'] = torch_to_numpy(rewards, is_object=True)
-            batch.non_tensor_batch['active_masks'] = torch_to_numpy(active_masks, is_object=True)
-            batch.non_tensor_batch['dones'] = torch_to_numpy(dones, is_object=True)
-            batch.non_tensor_batch['turn_idx'] = np.full(batch_size, _step, dtype=np.int32)
+            active_rewards = torch_to_numpy(rewards)[active_indices]
+            active_dones = torch_to_numpy(dones)[active_indices]
+            batch.non_tensor_batch['rewards'] = torch_to_numpy(active_rewards, is_object=True)
+            batch.non_tensor_batch['active_masks'] = np.ones(len(active_indices), dtype=object)
+            batch.non_tensor_batch['dones'] = torch_to_numpy(active_dones, is_object=True)
+            batch.non_tensor_batch['turn_idx'] = np.full(len(active_indices), _step, dtype=np.int32)
             
             # Update episode lengths for active environments
             batch_list: list[dict] = to_list_of_dict(batch)
 
-            for i in range(batch_size):
-                total_batch_list[i].append(batch_list[i])
-                total_infos[i].append(infos[i])
+            for pos, idx in enumerate(active_indices):
+                total_batch_list[idx].append(batch_list[pos])
+                total_infos[idx].append(infos[idx])
 
             # Update done states
             is_done = np.logical_or(is_done, dones)

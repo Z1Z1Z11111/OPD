@@ -44,7 +44,7 @@ class GRPOBaselineTest(unittest.TestCase):
         formal = training_settings(self.base, self.recipe)
         self.assertEqual(formal["trainer.n_gpus_per_node"], 2)
         self.assertEqual(formal["actor_rollout_ref.rollout.name"], "vllm")
-        self.assertEqual(formal["actor_rollout_ref.rollout.tensor_model_parallel_size"], 2)
+        self.assertEqual(formal["actor_rollout_ref.rollout.tensor_model_parallel_size"], 1)
         self.assertEqual(formal["data.train_batch_size"], 16)
         self.assertEqual(formal["actor_rollout_ref.rollout.n"], 1)
         self.assertEqual(formal["env.rollout.n"], 8)

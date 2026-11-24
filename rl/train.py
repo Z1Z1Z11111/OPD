@@ -94,7 +94,7 @@ def train(base, recipe, smoke, dry_run):
     os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (str(source_dir), os.getenv("PYTHONPATH"))))
     os.environ["ALFWORLD_DATA"] = str(data)
     if settings["actor_rollout_ref.rollout.name"] == "vllm":
-        os.environ.setdefault("VLLM_ATTENTION_BACKEND", "XFORMERS")
+        os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
     from omegaconf import OmegaConf
     from verl.trainer.main_ppo import run_ppo
 

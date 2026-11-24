@@ -50,10 +50,16 @@ from typing import List
 
 from msgspec import field
 from packaging import version as vs
-from vllm.lora.models import LoRAModel
+try:
+    from vllm.lora.models import LoRAModel
+except ImportError:
+    LoRAModel = None
 from vllm.lora.request import LoRARequest
 from vllm.lora.utils import get_adapter_absolute_path
-from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
+try:
+    from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
+except ImportError:
+    LRUCacheWorkerLoRAManager = None
 
 from verl.third_party.vllm import get_version
 
@@ -192,6 +198,8 @@ class VLLMHijack():
         def do_hijack(target_cls, target_method_name, hooking_method):
             setattr(target_cls, target_method_name, hooking_method)
 
+        if LRUCacheWorkerLoRAManager is None or LoRAModel is None:
+            raise RuntimeError("LoRA runtime tensor hijack is unavailable with this vLLM version")
         do_hijack(LRUCacheWorkerLoRAManager, "_load_adapter", hijack__load_adapter)
 
 

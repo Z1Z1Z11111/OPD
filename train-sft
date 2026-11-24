@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd -- "$(dirname -- "$0")"
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 HF_HUB_OFFLINE=1
+mkdir -p outputs/sft
+run_dir=$(mktemp -d "outputs/sft/launch-XXXXXX")
+echo "SFT 训练日志: $PWD/$run_dir/train.log"
+
+NPROC="${NPROC:-2}"
+if [[ "$NPROC" -gt 1 ]]; then
+  "${TORCHRUN:-torchrun}" --standalone --nproc_per_node="$NPROC" -m sft.train "$@" 2>&1 | tee "$run_dir/train.log"
+else
+  "${PYTHON:-python}" -u -m sft.train "$@" 2>&1 | tee "$run_dir/train.log"
+fi

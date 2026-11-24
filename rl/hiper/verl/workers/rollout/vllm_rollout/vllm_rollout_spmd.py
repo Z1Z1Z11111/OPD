@@ -39,7 +39,7 @@ from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from vllm import LLM, SamplingParams
 from vllm.distributed import parallel_state as vllm_ps
-from vllm.worker.worker_base import WorkerWrapperBase
+from vllm.engine.arg_utils import EngineArgs
 
 from verl import DataProto
 from verl.third_party.vllm import vllm_version
@@ -147,6 +147,10 @@ class vLLMRollout(BaseRollout):
         #    (which can vary across different vLLM versions);
         # - Otherwise it's the desired value we want to explicitly set.
         engine_kwargs = {key: val for key, val in engine_kwargs.items() if val is not None}
+        if "disable_mm_preprocessor_cache" in EngineArgs.__dataclass_fields__:
+            engine_kwargs.setdefault("disable_mm_preprocessor_cache", True)
+        elif "mm_processor_cache_gb" in EngineArgs.__dataclass_fields__:
+            engine_kwargs.setdefault("mm_processor_cache_gb", 0)
         self.inference_engine = LLM(
             model=model_path,
             enable_sleep_mode=True,
@@ -156,7 +160,6 @@ class vLLMRollout(BaseRollout):
             enforce_eager=config.enforce_eager,
             gpu_memory_utilization=config.gpu_memory_utilization,
             disable_custom_all_reduce=True,
-            disable_mm_preprocessor_cache=True,
             limit_mm_per_prompt=limit_mm_per_prompt,
             skip_tokenizer_init=False,
             max_model_len=max_model_len,

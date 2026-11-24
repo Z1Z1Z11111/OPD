@@ -23,6 +23,8 @@ def alfworld_projection(actions: List[str], action_pools: List[List[str]]):
 
     for i in range(len(actions)):
         original_str = actions[i]
+        if original_str == "__inactive__":
+            continue
         actions[i] = actions[i].lower()
 
         start_tag = "<action>"

@@ -63,7 +63,8 @@ class FSDPCheckpointManager(BaseCheckpointManager):
             assert "tokenizer" in kwargs, "tokenizer or processor must be provided"
             warnings.warn("`tokenizer` is deprecated. use `processing_class` instead.", DeprecationWarning, stacklevel=2)
             processing_class = kwargs.pop("tokenizer")
-        assert "model" in checkpoint_contents and "optimizer" in checkpoint_contents and "extra" in checkpoint_contents, f"FSDPCheckpointManager must include ['model', 'optimizer', 'extra'], got {checkpoint_contents}"
+        has_fsdp = "model" in checkpoint_contents and "optimizer" in checkpoint_contents and "extra" in checkpoint_contents
+        assert has_fsdp or "hf_model" in checkpoint_contents, f"FSDPCheckpointManager must include ['model', 'optimizer', 'extra'] or 'hf_model', got {checkpoint_contents}"
 
         super().__init__(
             model,
@@ -159,30 +160,31 @@ class FSDPCheckpointManager(BaseCheckpointManager):
         local_path = self.local_mkdir(local_path)
         torch.distributed.barrier()
 
-        # every rank will save its own model and optim shard
-        state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
-        optim_cfg = ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            with get_fsdp_state_ctx(self.model, StateDictType.SHARDED_STATE_DICT, state_dict_cfg, optim_cfg):
-                model_state_dict = self.model.state_dict()
-                optimizer_state_dict = self.optimizer.state_dict() if self.optimizer is not None else None
-                lr_scheduler_state_dict = self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None
+        if "model" in self.checkpoint_contents:
+            # every rank will save its own model and optim shard
+            state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
+            optim_cfg = ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with get_fsdp_state_ctx(self.model, StateDictType.SHARDED_STATE_DICT, state_dict_cfg, optim_cfg):
+                    model_state_dict = self.model.state_dict()
+                    optimizer_state_dict = self.optimizer.state_dict() if self.optimizer is not None else None
+                    lr_scheduler_state_dict = self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None
 
-                extra_state_dict = {
-                    "lr_scheduler": lr_scheduler_state_dict,
-                    "rng": self.get_rng_state(),
-                }
-                model_path = os.path.join(local_path, f"model_world_size_{self.world_size}_rank_{self.rank}.pt")
-                optim_path = os.path.join(local_path, f"optim_world_size_{self.world_size}_rank_{self.rank}.pt")
-                extra_path = os.path.join(local_path, f"extra_state_world_size_{self.world_size}_rank_{self.rank}.pt")
+                    extra_state_dict = {
+                        "lr_scheduler": lr_scheduler_state_dict,
+                        "rng": self.get_rng_state(),
+                    }
+                    model_path = os.path.join(local_path, f"model_world_size_{self.world_size}_rank_{self.rank}.pt")
+                    optim_path = os.path.join(local_path, f"optim_world_size_{self.world_size}_rank_{self.rank}.pt")
+                    extra_path = os.path.join(local_path, f"extra_state_world_size_{self.world_size}_rank_{self.rank}.pt")
 
-                print(f"[rank-{self.rank}]: Saving model to {os.path.abspath(model_path)}")
-                print(f"[rank-{self.rank}]: Saving optim to {os.path.abspath(optim_path)}")
-                print(f"[rank-{self.rank}]: Saving extra_state to {os.path.abspath(extra_path)}")
-                torch.save(model_state_dict, model_path)
-                torch.save(optimizer_state_dict, optim_path)  # TODO: address optimizer is None
-                torch.save(extra_state_dict, extra_path)
+                    print(f"[rank-{self.rank}]: Saving model to {os.path.abspath(model_path)}")
+                    print(f"[rank-{self.rank}]: Saving optim to {os.path.abspath(optim_path)}")
+                    print(f"[rank-{self.rank}]: Saving extra_state to {os.path.abspath(extra_path)}")
+                    torch.save(model_state_dict, model_path)
+                    torch.save(optimizer_state_dict, optim_path)  # TODO: address optimizer is None
+                    torch.save(extra_state_dict, extra_path)
 
         if self.rank == 0:
             if fsdp_version(self.model) == 1:

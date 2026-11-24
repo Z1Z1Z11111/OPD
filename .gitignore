@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 outputs/
+swanlog/
 data/alfworld/*
 !data/alfworld/.gitkeep
 

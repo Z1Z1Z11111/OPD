@@ -272,7 +272,7 @@ class AlfredTWEnv(object):
 
         env_id = textworld.gym.register_games(self.game_files, request_infos,
                                               batch_size=batch_size,
-                                              asynchronous=True,
+                                              asynchronous=batch_size > 1,
                                               max_episode_steps=max_nb_steps_per_episode,
                                               wrappers=wrappers)
         # Launch Gym environment.

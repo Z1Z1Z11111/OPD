@@ -13,11 +13,12 @@
 # limitations under the License.
 """Apply monkey-patch function to text CausalLM models."""
 
+import importlib.util
 import sys
 from typing import Optional
 
 import torch
-from transformers.modeling_flash_attention_utils import _flash_attention_forward
+from transformers.modeling_flash_attention_utils import _flash_attention_forward, _prepare_from_posids
 from transformers.modeling_utils import PreTrainedModel
 
 from verl.utils.ulysses import (
@@ -26,6 +27,33 @@ from verl.utils.ulysses import (
     get_ulysses_sequence_parallel_group,
     get_ulysses_sequence_parallel_world_size,
 )
+
+_HAS_FLASH_ATTN = importlib.util.find_spec("flash_attn") is not None
+
+
+def _varlen_flash_attention_forward(
+    query_states: torch.Tensor,
+    key_states: torch.Tensor,
+    value_states: torch.Tensor,
+    attention_mask: Optional[torch.Tensor] = None,
+    query_length: int = 0,
+    is_causal: bool = True,
+    position_ids: Optional[torch.Tensor] = None,
+    softmax_scale: Optional[float] = None,
+    sliding_window: Optional[int] = None,
+    **kwargs,
+):
+    from torch.nn.attention.varlen import varlen_attn
+
+    q, k, v, (cu_q, cu_k), (max_q, max_k) = _prepare_from_posids(
+        query_states, key_states, value_states, position_ids
+    )
+    left_window = -1 if sliding_window is None else int(sliding_window)
+    window = (left_window, 0) if is_causal else (left_window, left_window)
+    out = varlen_attn(
+        q, k, v, cu_q, cu_k, int(max_q), int(max_k), scale=softmax_scale, window_size=window
+    )
+    return out.view(query_states.size(0), -1, out.size(-2), out.size(-1))
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -60,7 +88,10 @@ def _ulysses_flash_attention_forward(
         torch.distributed.all_gather(position_ids_list, position_ids, group=get_ulysses_sequence_parallel_group())
         position_ids = torch.concat(position_ids_list, dim=-1)
 
-    attn_output = _flash_attention_forward(query_states, key_states, value_states, *args, position_ids=position_ids, **kwargs)
+    if _HAS_FLASH_ATTN:
+        attn_output = _flash_attention_forward(query_states, key_states, value_states, *args, position_ids=position_ids, **kwargs)
+    else:
+        attn_output = _varlen_flash_attention_forward(query_states, key_states, value_states, *args, position_ids=position_ids, **kwargs)
 
     if ulysses_sp_size > 1:
         attn_output = gather_heads_scatter_seq(attn_output, seq_dim=1, head_dim=2)
@@ -85,8 +116,14 @@ def apply_monkey_patch(
         raise NotImplementedError("use_fused_kernels is not enabled in this minimal GRPO build.")
 
     if use_remove_padding or ulysses_sp_size > 1:
+        from transformers.integrations import flash_attention
+
+        flash_attention._flash_attention_forward = _ulysses_flash_attention_forward
         if hasattr(module, "_flash_attention_forward"):
             module._flash_attention_forward = _ulysses_flash_attention_forward
-        else:
-            from transformers.integrations import flash_attention
-            flash_attention._flash_attention_forward = _ulysses_flash_attention_forward
+        if not _HAS_FLASH_ATTN:
+            from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS
+            from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+            ALL_ATTENTION_FUNCTIONS["sdpa"] = flash_attention.flash_attention_forward
+            ALL_MASK_ATTENTION_FUNCTIONS["sdpa"] = ALL_MASK_ATTENTION_FUNCTIONS["flash_attention_2"]

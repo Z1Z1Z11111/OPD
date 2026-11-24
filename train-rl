@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 0 ]]; then
-    echo "用法 $0" >&2
-    exit 2
-fi
-
 cd -- "$(dirname -- "$0")"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 HF_HUB_OFFLINE=1
 mkdir -p outputs/grpo
 run_dir=$(mktemp -d "outputs/grpo/launch-XXXXXX")
+export SWANLAB_LOG_DIR="$PWD/$run_dir/swanlog"
 echo "训练日志: $PWD/$run_dir/train.log"
-python -u -m rl.train 2>&1 | tee "$run_dir/train.log"
+"${PYTHON:-python}" -u -m rl.train "$@" 2>&1 | tee "$run_dir/train.log"

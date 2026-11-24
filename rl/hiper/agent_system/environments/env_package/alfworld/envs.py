@@ -18,8 +18,6 @@ import yaml
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-import torch
-import torchvision.transforms as T
 import ray
 
 from agent_system.environments.env_package.alfworld.alfworld.agents.environment import get_environment
@@ -34,6 +32,9 @@ def load_config_file(path):
     return config
 
 def get_obs_image(env):
+    import torch
+    import torchvision.transforms as T
+
     transform = T.Compose([T.ToTensor()])
     current_frames = env.get_frames()
     image_tensors = [transform(i).cuda() for i in current_frames]
@@ -54,33 +55,54 @@ def compute_reward(info, multi_modal=False):
 
 class AlfworldWorker:
     """
-    Ray remote actor that replaces the worker function.
-    Each actor holds one environment instance.
+    Ray remote actor holding one or more independent ALFWorld sub-environments.
+    Packing multiple text sub-environments per actor avoids spawning hundreds of
+    Ray/TextWorld processes and keeps host RAM bounded.
     """
-    
-    def __init__(self, config, seed, base_env):
-        self.env = base_env.init_env(batch_size=1)  # Each worker holds only one sub-environment
-        self.env.seed(seed)
-    
-    def step(self, action):
-        """Execute a step in the environment"""
-        actions = [action] 
-        
-        obs, scores, dones, infos = self.env.step(actions)
-        infos['observation_text'] = obs
-        return obs, scores, dones, infos
-    
+
+    def __init__(self, config, seeds, base_env):
+        self.envs = []
+        for seed in seeds:
+            env = base_env.init_env(batch_size=1)
+            env.seed(seed)
+            self.envs.append(env)
+
+    def step(self, actions):
+        """Execute one step in each sub-environment."""
+        results = []
+        for env, action in zip(self.envs, actions):
+            if action == "__inactive__":
+                results.append(
+                    (
+                        [""],
+                        [0.0],
+                        [True],
+                        {
+                            "admissible_commands": [[]],
+                            "won": [False],
+                            "observation_text": [""],
+                            "extra.gamefile": [None],
+                        },
+                    )
+                )
+                continue
+            obs, scores, dones, infos = env.step([action])
+            infos['observation_text'] = obs
+            results.append((obs, scores, dones, infos))
+        return results
+
     def reset(self):
-        """Reset the environment"""
-        obs, infos = self.env.reset()
-        infos['observation_text'] = obs
-        return obs, infos
-    
+        """Reset all sub-environments."""
+        results = []
+        for env in self.envs:
+            obs, infos = env.reset()
+            infos['observation_text'] = obs
+            results.append((obs, infos))
+        return results
+
     def getobs(self):
-        """Get current observation image"""
-        image = get_obs_image(self.env)
-        image = image.cpu()  
-        return image
+        """Get current observation images for all sub-environments."""
+        return [get_obs_image(env).cpu() for env in self.envs]
 
 class AlfworldEnvs(gym.Env):
     def __init__(self, alf_config_path, seed, env_num, group_n, resources_per_worker, is_train=True, env_kwargs={}):
@@ -98,12 +120,20 @@ class AlfworldEnvs(gym.Env):
         self.num_processes = env_num * group_n
         self.group_n = group_n
 
-        # Create Ray remote actors instead of processes
+        # Create Ray remote actors instead of processes (pack text envs into 64 train / 32 val actors)
         env_worker = ray.remote(**resources_per_worker)(AlfworldWorker)
+        seeds = [seed + (i // self.group_n) for i in range(self.num_processes)]
+        worker_cap = 64 if is_train else 32
+        max_workers = self.num_processes if self.multi_modal else min(self.num_processes, worker_cap)
+        base_size, rem = divmod(self.num_processes, max_workers)
         self.workers = []
-        for i in range(self.num_processes):
-            worker = env_worker.remote(config, seed + (i // self.group_n), base_env)
-            self.workers.append(worker)
+        self.worker_slices = []
+        start = 0
+        for w in range(max_workers):
+            end = start + base_size + (1 if w < rem else 0)
+            self.worker_slices.append((start, end))
+            self.workers.append(env_worker.remote(config, seeds[start:end], base_env))
+            start = end
 
         self.prev_admissible_commands = [None for _ in range(self.num_processes)]
 
@@ -112,10 +142,10 @@ class AlfworldEnvs(gym.Env):
             "The num of actions must be equal to the num of processes"
 
         # Send step commands to all workers
-        futures = []
-        for i, worker in enumerate(self.workers):
-            future = worker.step.remote(actions[i])
-            futures.append(future)
+        futures = [
+            worker.step.remote(actions[start:end])
+            for worker, (start, end) in zip(self.workers, self.worker_slices)
+        ]
 
         # Collect results
         text_obs_list = []
@@ -124,7 +154,7 @@ class AlfworldEnvs(gym.Env):
         dones_list = []
         info_list = []
 
-        results = ray.get(futures)
+        results = [item for chunk in ray.get(futures) for item in chunk]
         for i, (obs, scores, dones, info) in enumerate(results):
             for k in info.keys():
                 info[k] = info[k][0]
@@ -152,13 +182,10 @@ class AlfworldEnvs(gym.Env):
         info_list = []
 
         # Send reset commands to all workers
-        futures = []
-        for worker in self.workers:
-            future = worker.reset.remote()
-            futures.append(future)
+        futures = [worker.reset.remote() for worker in self.workers]
 
         # Collect results
-        results = ray.get(futures)
+        results = [item for chunk in ray.get(futures) for item in chunk]
         for i, (obs, info) in enumerate(results):
             for k in info.keys():
                 info[k] = info[k][0] 
@@ -178,13 +205,8 @@ class AlfworldEnvs(gym.Env):
         Ask each worker to return its current frame image.
         Usually needed only for multi-modal environments; otherwise can return None.
         """
-        futures = []
-        for worker in self.workers:
-            future = worker.getobs.remote()
-            futures.append(future)
-
-        images = ray.get(futures)
-        return images
+        futures = [worker.getobs.remote() for worker in self.workers]
+        return [img for chunk in ray.get(futures) for img in chunk]
 
     @property
     def get_admissible_commands(self):

@@ -1,0 +1,33 @@
+# Standalone Vanilla SFT cold-start recipe for Qwen2.5-1.5B-Instruct on ALFWorld.
+# Trained on step-level data rendered with agent.py's exact ALFWORLD_TEMPLATE (history_length=2).
+train_file: data/sft/alfworld_hiper_h2/train_steps.jsonl
+val_file: data/sft/alfworld_hiper_h2/val_steps.jsonl
+output_dir: outputs/sft
+
+experiment_name: sft_qwen2.5_1.5b
+project_name: opd_alfworld
+
+# Gentle cold-start hyperparameters designed to preserve exploration entropy for subsequent GRPO.
+# Every epoch exports an independent HF checkpoint (epoch_1/hf_model, epoch_2/hf_model).
+epochs: 2
+lr: 1.0e-5
+min_lr_ratio: 0.1
+warmup_ratio: 0.05
+weight_decay: 0.01
+max_grad_norm: 1.0
+
+# 2 GPUs x micro_batch_size 8 x grad_accum 4 = global_batch_size 64
+micro_batch_size: 8
+global_batch_size: 64
+num_workers: 2
+
+attn_implementation: sdpa
+gradient_checkpointing: false
+
+# 0.0 = standard Vanilla SFT; set > 0 (e.g. 0.05) to enable OPC-SFT low-prob token clipping.
+opc_clip_eps: 0.0
+
+val_before_train: true
+log_every: 10
+use_swanlab: false
+swanlab_mode: local

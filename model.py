@@ -1,5 +1,6 @@
 """Offline vLLM inference for ALFWorld ReAct / GRPO evaluation."""
 import json
+import os
 
 from alfworld_env import project_path
 
@@ -72,6 +73,8 @@ class ModelCaller:
             raise RuntimeError("The vLLM backend requires a CUDA GPU")
         if tp > torch.cuda.device_count():
             raise ValueError("tensor_parallel_size exceeds the number of visible CUDA GPUs")
+        os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+        os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
         try:
             from vllm import LLM, SamplingParams
         except ImportError as error:

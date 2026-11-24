@@ -1,0 +1,30 @@
+# OPC-SFT (ICML 2026) cold-start recipe: clips gradients on low-probability tokens (p_t < opc_clip_eps)
+# to prevent overfitting to out-of-prior expert CoT tokens and preserve RL generalization/entropy.
+train_file: data/sft/alfworld_hiper_h2/train_steps.jsonl
+val_file: data/sft/alfworld_hiper_h2/val_steps.jsonl
+output_dir: outputs/sft
+
+experiment_name: opc_sft_qwen2.5_1.5b
+project_name: opd_alfworld
+
+epochs: 2
+lr: 1.0e-5
+min_lr_ratio: 0.1
+warmup_ratio: 0.05
+weight_decay: 0.01
+max_grad_norm: 1.0
+
+micro_batch_size: 8
+global_batch_size: 64
+num_workers: 2
+
+attn_implementation: sdpa
+gradient_checkpointing: false
+
+# Low-probability token clipping threshold (p_t < 0.05 stops gradient; monitor clip_ratio in logs).
+opc_clip_eps: 0.05
+
+val_before_train: true
+log_every: 10
+use_swanlab: false
+swanlab_mode: local
